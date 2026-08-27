@@ -97,9 +97,17 @@ def _apply_liquidator_manifest_mapping(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df = df.rename(columns=LIQUIDATOR_MANIFEST_COLUMN_MAP)
-    df["tax_rate"] = (
-        df["cgst_rate"].fillna(0) + df["sgst_rate"].fillna(0) + df["igst_rate"].fillna(0)
-    ) * 100
+    # cgst_rate/sgst_rate/igst_rate can come in as either a plain percentage
+    # (9.0 meaning 9%) or a fraction (0.09 meaning 9%), depending on the
+    # export. A real GST slab is never between 0 and 1 as a percentage (the
+    # slabs are 0/0.25/3/5/12/18/28), so any value in that range is
+    # unambiguously a fraction and gets scaled up; anything >= 1 is already
+    # a percentage and is left as-is.
+    def _as_percentage(rate_column):
+        rate_column = rate_column.fillna(0)
+        return rate_column.where(~((rate_column > 0) & (rate_column < 1)), rate_column * 100)
+
+    df["tax_rate"] = _as_percentage(df["cgst_rate"]) + _as_percentage(df["sgst_rate"]) + _as_percentage(df["igst_rate"])
     return df
 
 
@@ -123,10 +131,14 @@ def parse_invoice_sheet(file) -> pd.DataFrame:
 
     df["invoice_number"] = df["invoice_number"].astype(str).str.strip()
 
-    # awb_number is a large integer -- format it as a plain digit string, not
-    # pandas' default float repr (e.g. "1211222253776.0"), since Zoho's AWB
-    # Number field is free text and shouldn't carry a trailing ".0".
-    def _format_awb(value):
+    # awb_number and hsn_code are both large integer-looking columns -- format
+    # them as plain digit strings, not pandas' default float repr (e.g.
+    # "1211222253776.0"), which would happen if the column has any blank cell
+    # (forcing pandas to infer float64 for the whole column). awb_number is
+    # free text in Zoho and shouldn't carry a trailing ".0"; hsn_code is
+    # compared as an exact string against Zoho's hsn_or_sac in
+    # find_item_by_hsn, so a stray ".0" would silently break every match.
+    def _format_integer_string(value):
         if pd.isna(value):
             return ""
         try:
@@ -134,7 +146,8 @@ def parse_invoice_sheet(file) -> pd.DataFrame:
         except (TypeError, ValueError):
             return str(value).strip()
 
-    df["awb_number"] = df["awb_number"].apply(_format_awb)
+    df["awb_number"] = df["awb_number"].apply(_format_integer_string)
+    df["hsn_code"] = df["hsn_code"].apply(_format_integer_string)
 
     parsed_dates = pd.to_datetime(df["invoice_date"], dayfirst=True, errors="coerce")
     if parsed_dates.isna().any():
