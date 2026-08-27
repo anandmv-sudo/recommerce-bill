@@ -201,11 +201,19 @@ class ZohoClient:
         HSN 73239390 has one RTREC_ entry at 5% and another at 18%. Where
         candidates still share both HSN and rate (a true duplicate in the
         catalog, e.g. two RTREC_ entries for the same HSN both at 18%),
-        that's surfaced as ambiguous rather than guessed."""
+        that's surfaced as ambiguous rather than guessed.
+
+        The name_contains=RTREC filter is applied server-side (confirmed
+        empirically) rather than just filtering client-side after an
+        unfiltered /items?hsn_or_sac= call -- a shared HSN can have
+        thousands of individual per-product items in the live org (each
+        imported from CSV), well past the first page of results, so a
+        client-side-only filter could miss the RTREC_ catalog entry
+        entirely if it doesn't happen to land on page 1."""
         response = requests.get(
             f"{self.cfg.api_base_url}/items",
             headers=self._headers(),
-            params=self._params({"hsn_or_sac": hsn_code}),
+            params=self._params({"hsn_or_sac": hsn_code, "name_contains": "RTREC"}),
             timeout=30,
         )
         items = self._check(response).get("items", [])

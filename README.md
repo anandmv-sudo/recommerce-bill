@@ -63,7 +63,11 @@ bill draft creation/attachment is not yet wired into the app.
   (undocumented in Zoho's public API docs): that endpoint returns a `tax_info_list` array of
   `{tax_info_id, tax_registration_no, place_of_supply, is_primary, trader_name, legal_name}`
   dicts — `_get_taxinfo` takes whichever list-of-dicts value is present rather than hardcoding
-  the `tax_info_list` key, in case it varies across orgs/plans.
+  the `tax_info_list` key, in case it varies across orgs/plans. `find_item_by_hsn` filters
+  `/items` server-side with `name_contains=RTREC` alongside `hsn_or_sac` (confirmed empirically)
+  rather than filtering client-side after an unfiltered call — the live org can have thousands of
+  individual per-product items sharing one HSN (imported from CSV), so the RTREC_ catalog entry
+  can land well past the first page and a client-side-only filter would miss it.
 - **Bill creation / attachment / post-run outcome report** are not yet wired into `app.py`.
 - Duplicate checking against **previously created bills** currently only checks the local
   `local_state.db` (populated by this app itself) — it does not yet cross-check Zoho directly for
