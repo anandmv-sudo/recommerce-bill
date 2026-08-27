@@ -44,6 +44,22 @@ EWB_VALIDATION_COLUMN_MAP = {
 }
 
 
+def _format_integer_string(value):
+    """Formats a large integer-looking value (HSN code, AWB number, E-way
+    Bill number, ...) as a plain digit string, not pandas' default float
+    repr (e.g. "1211222253776.0"), which happens whenever the source column
+    has any blank cell (forcing pandas to infer float64 for the whole
+    column). These values are compared/sent as exact strings downstream
+    (Zoho's hsn_or_sac, the E-way Bill API's EWB number, ...), so a stray
+    ".0" silently breaks every match/request."""
+    if pd.isna(value):
+        return ""
+    try:
+        return str(int(float(value)))
+    except (TypeError, ValueError):
+        return str(value).strip()
+
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
     return df
@@ -131,21 +147,6 @@ def parse_invoice_sheet(file) -> pd.DataFrame:
 
     df["invoice_number"] = df["invoice_number"].astype(str).str.strip()
 
-    # awb_number and hsn_code are both large integer-looking columns -- format
-    # them as plain digit strings, not pandas' default float repr (e.g.
-    # "1211222253776.0"), which would happen if the column has any blank cell
-    # (forcing pandas to infer float64 for the whole column). awb_number is
-    # free text in Zoho and shouldn't carry a trailing ".0"; hsn_code is
-    # compared as an exact string against Zoho's hsn_or_sac in
-    # find_item_by_hsn, so a stray ".0" would silently break every match.
-    def _format_integer_string(value):
-        if pd.isna(value):
-            return ""
-        try:
-            return str(int(float(value)))
-        except (TypeError, ValueError):
-            return str(value).strip()
-
     df["awb_number"] = df["awb_number"].apply(_format_integer_string)
     df["hsn_code"] = df["hsn_code"].apply(_format_integer_string)
 
@@ -177,5 +178,5 @@ def parse_eway_bill_mapping(file) -> dict[str, str]:
 
     df = df.dropna(subset=["invoice_number", "eway_bill_number"])
     df["invoice_number"] = df["invoice_number"].astype(str).str.strip()
-    df["eway_bill_number"] = df["eway_bill_number"].astype(str).str.strip()
+    df["eway_bill_number"] = df["eway_bill_number"].apply(_format_integer_string)
     return dict(zip(df["invoice_number"], df["eway_bill_number"]))
