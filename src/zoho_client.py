@@ -282,7 +282,14 @@ class ZohoClient:
         due_date: str | None = None,
         custom_fields: list[dict] | None = None,
         branch_id: str | None = None,
+        gst_no: str | None = None,
+        source_of_supply: str | None = None,
     ) -> dict:
+        """gst_no/source_of_supply post this specific bill under the exact
+        GSTIN the invoice was matched on -- which find_vendor_by_gstin may
+        have resolved via a vendor's ADDITIONAL GSTIN, not their primary
+        one. Left unset, Zoho defaults the bill to the vendor's primary
+        GSTIN/state regardless of which registration actually matched."""
         payload = {
             "vendor_id": vendor_id,
             "bill_number": bill_number,
@@ -295,6 +302,10 @@ class ZohoClient:
             payload["custom_fields"] = custom_fields
         if branch_id:
             payload["branch_id"] = branch_id
+        if gst_no:
+            payload["gst_no"] = gst_no
+        if source_of_supply:
+            payload["source_of_supply"] = source_of_supply
 
         response = requests.post(
             f"{self.cfg.api_base_url}/bills",

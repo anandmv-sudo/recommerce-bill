@@ -7,6 +7,7 @@ import pandas as pd
 
 from . import local_state
 from .eway_bill_client import EwayBillClient
+from .state_codes import to_state_code
 from .zoho_client import ZohoClient
 
 TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S"
@@ -152,6 +153,11 @@ def _create_bill_for_invoice(
                 {"api_name": "cf_awb_number", "value": str(first.get("awb_number") or "")},
             ],
             branch_id=zoho.cfg.branch_id,  # Warehouse location -- "Telangana - HO"
+            # Posts the bill under the exact GSTIN from the Amazon sheet --
+            # not the vendor's primary GSTIN, since find_vendor_by_gstin may
+            # have matched this vendor via an additional GSTIN instead.
+            gst_no=seller_gstin,
+            source_of_supply=to_state_code(first["seller_state"]),
         )
     except Exception as exc:  # noqa: BLE001
         outcome.status = "failed"

@@ -69,6 +69,14 @@ bill draft creation/attachment is not yet wired into the app.
   individual per-product items sharing one HSN (imported from CSV), so the RTREC_ catalog entry
   can land well past the first page and a client-side-only filter would miss it.
 - **Bill creation / attachment / post-run outcome report** are not yet wired into `app.py`.
+- **Bill-level GSTIN override**: `create_bill_draft` now passes `gst_no`/`source_of_supply` from
+  the invoice sheet's own `seller_gstin`/`seller_state`, not the vendor's primary GSTIN — needed
+  because `find_vendor_by_gstin` can match a vendor via an ADDITIONAL GSTIN, and Zoho would
+  otherwise default the bill to that vendor's primary GSTIN regardless. These fields are
+  documented for `POST /bills`, but Zoho's docs don't confirm the override actually applies (vs.
+  being ignored, or validated against the vendor's own GSTIN list and rejected) when the value
+  doesn't match the vendor's primary registration — needs a sandbox check against a vendor with
+  multiple GSTINs before relying on it in Live.
 - Duplicate checking against **previously created bills** currently only checks the local
   `local_state.db` (populated by this app itself) — it does not yet cross-check Zoho directly for
   bills created outside this tool.
