@@ -1,3 +1,5 @@
+import concurrent.futures as cf
+import threading
 from dataclasses import dataclass, field
 
 import requests
@@ -5,6 +7,8 @@ import requests
 from .config import ZohoConfig
 from .state_codes import to_state_code
 from .zoho_auth import get_access_token
+
+_TAXINFO_MAX_WORKERS = 16
 
 
 @dataclass
@@ -26,12 +30,16 @@ class ZohoClient:
 
     NOTE: server-side filtering by bill_number (bills) is not confirmed in
     Zoho's public docs -- verify against a sandbox org before relying on it.
-    gst_no filtering on /contacts IS confirmed to work server-side.
+    Vendor lookup deliberately does NOT filter /contacts by gst_no server-side
+    -- that param only matches a vendor's primary GSTIN, missing additional
+    GSTINs registered under the contact's /taxinfo. See find_vendor_by_gstin.
     """
 
     def __init__(self, cfg: ZohoConfig):
         self.cfg = cfg
         self._taxes_cache: list[dict] | None = None
+        self._vendor_registrations: list[dict] | None = None
+        self._vendor_index_lock = threading.Lock()
 
     def _headers(self) -> dict:
         token = get_access_token(self.cfg)
@@ -51,29 +59,82 @@ class ZohoClient:
         return body
 
     def find_vendor_by_gstin(self, gstin: str, state: str) -> VendorLookupResult:
-        response = requests.get(
-            f"{self.cfg.api_base_url}/contacts",
-            headers=self._headers(),
-            params=self._params({"gst_no": gstin}),
-            timeout=30,
-        )
-        contacts = self._check(response).get("contacts", [])
+        """A vendor in Zoho Books can have one primary GSTIN plus any number
+        of additional GSTINs (registered per state, exposed via each
+        contact's /taxinfo sub-resource) -- an invoice's seller GSTIN can
+        legitimately be either. The plain /contacts?gst_no= filter only ever
+        matches the primary one, so this matches against a full index of
+        every vendor's primary + additional (gstin, state) registrations,
+        built once per ZohoClient instance and reused for every lookup."""
+        self._ensure_vendor_index()
 
         state_code = to_state_code(state)
-        matches = [
-            c for c in contacts
-            if c.get("gst_no") == gstin
-            and c.get("place_of_contact") == state_code
-            and c.get("contact_type") == "vendor"
-        ]
+        same_gstin = [r for r in self._vendor_registrations if r["gstin"] == gstin]
+        matches = [r for r in same_gstin if r["state_code"] == state_code]
 
         if not matches:
-            return VendorLookupResult(status="not_found", candidates=contacts)
-        if len(matches) > 1:
-            # Same GSTIN + state matched more than one contact -- a duplicate
-            # vendor record in Zoho itself. Don't guess; surface it.
-            return VendorLookupResult(status="ambiguous", candidates=matches)
-        return VendorLookupResult(status="found", vendor=matches[0])
+            return VendorLookupResult(status="not_found", candidates=[r["vendor"] for r in same_gstin])
+
+        vendor_ids = {r["vendor"]["contact_id"] for r in matches}
+        if len(vendor_ids) > 1:
+            # Same GSTIN + state matched more than one vendor contact -- a
+            # duplicate vendor record in Zoho itself. Don't guess; surface it.
+            return VendorLookupResult(status="ambiguous", candidates=[r["vendor"] for r in matches])
+        return VendorLookupResult(status="found", vendor=matches[0]["vendor"])
+
+    def _ensure_vendor_index(self) -> None:
+        with self._vendor_index_lock:
+            if self._vendor_registrations is not None:
+                return
+
+            vendors = self._list_all_vendor_contacts()
+            registrations = []
+            for vendor in vendors:
+                gstin, state_code = vendor.get("gst_no"), vendor.get("place_of_contact")
+                if gstin and state_code:
+                    registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
+
+            with cf.ThreadPoolExecutor(max_workers=_TAXINFO_MAX_WORKERS) as executor:
+                taxinfo_futures = {executor.submit(self._get_taxinfo, v["contact_id"]): v for v in vendors}
+                for future, vendor in taxinfo_futures.items():
+                    for entry in future.result():
+                        gstin, state_code = entry.get("gst_no"), entry.get("place_of_contact")
+                        if gstin and state_code:
+                            registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
+
+            self._vendor_registrations = registrations
+
+    def _list_all_vendor_contacts(self) -> list[dict]:
+        contacts = []
+        page = 1
+        while True:
+            response = requests.get(
+                f"{self.cfg.api_base_url}/contacts",
+                headers=self._headers(),
+                params=self._params({"contact_type": "vendor", "page": page, "per_page": 200}),
+                timeout=30,
+            )
+            body = self._check(response)
+            contacts.extend(body.get("contacts", []))
+            if not body.get("page_context", {}).get("has_more_page"):
+                return contacts
+            page += 1
+
+    def _get_taxinfo(self, contact_id: str) -> list[dict]:
+        """The list-of-additional-GSTINs response key isn't confirmed against
+        Zoho's docs, so this takes whichever list-of-dicts value is present
+        in the response body rather than guessing a specific key name."""
+        response = requests.get(
+            f"{self.cfg.api_base_url}/contacts/{contact_id}/taxinfo",
+            headers=self._headers(),
+            params=self._params(),
+            timeout=30,
+        )
+        body = self._check(response)
+        for value in body.values():
+            if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+                return value
+        return []
 
     def find_item_by_hsn(self, hsn_code: str, tax_rate: float) -> ItemLookupResult:
         """Resolves an existing Zoho item (never creates one) by HSN code,

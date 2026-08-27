@@ -51,9 +51,14 @@ bill draft creation/attachment is not yet wired into the app.
 ## Known gaps before this is production-ready
 
 - **E-way Bill API**: waiting on the spec to be provided; `src/eway_bill_client.py` is a stub.
-- **Zoho filter support**: `find_vendor_by_gstin` and `find_bill_by_number` in `src/zoho_client.py`
-  assume server-side filtering by `gst_no` / `bill_number` — this isn't confirmed in Zoho's public
-  docs and needs verifying against a sandbox org.
+- **Zoho filter support**: `find_bill_by_number` in `src/zoho_client.py` assumes server-side
+  filtering by `bill_number` — this isn't confirmed in Zoho's public docs and needs verifying
+  against a sandbox org. `find_vendor_by_gstin` no longer relies on server-side `gst_no`
+  filtering — it matches against a full index of every vendor's primary + additional GSTINs
+  (the latter fetched per-vendor from `/contacts/{contact_id}/taxinfo`), built once per
+  `ZohoClient` instance. The exact JSON key Zoho uses for the additional-GSTIN list in that
+  endpoint's response isn't confirmed either — `_get_taxinfo` takes whichever list-of-dicts
+  value is present rather than a hardcoded key, but this needs a sandbox check too.
 - **Bill creation / attachment / post-run outcome report** are not yet wired into `app.py`.
 - Duplicate checking against **previously created bills** currently only checks the local
   `local_state.db` (populated by this app itself) — it does not yet cross-check Zoho directly for
