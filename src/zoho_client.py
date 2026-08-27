@@ -11,6 +11,15 @@ from .zoho_auth import get_access_token
 _TAXINFO_MAX_WORKERS = 16
 
 
+def _pan_of(gstin: str | None) -> str | None:
+    """Characters 3-12 (1-indexed) of a 15-digit GSTIN are the PAN of the
+    entity it's registered to. Every GSTIN issued to that entity -- primary
+    or additional, in any state -- shares this same 10-character PAN."""
+    if not gstin or len(gstin) < 12:
+        return None
+    return gstin[2:12]
+
+
 @dataclass
 class VendorLookupResult:
     status: str  # "found" | "not_found" | "ambiguous"
@@ -39,7 +48,11 @@ class ZohoClient:
         self.cfg = cfg
         self._taxes_cache: list[dict] | None = None
         self._vendor_registrations: list[dict] | None = None
-        self._vendor_index_lock = threading.Lock()
+        self._vendors_by_pan: dict[str, list[dict]] | None = None
+        self._vendor_list_lock = threading.Lock()
+        self._taxinfo_checked: set[str] = set()
+        self._taxinfo_lock = threading.Lock()
+        self._registrations_append_lock = threading.Lock()
 
     def _headers(self) -> dict:
         token = get_access_token(self.cfg)
@@ -62,17 +75,27 @@ class ZohoClient:
         """A vendor in Zoho Books can have one primary GSTIN plus any number
         of additional GSTINs (registered per state, exposed via each
         contact's /taxinfo sub-resource) -- an invoice's seller GSTIN can
-        legitimately be either. The plain /contacts?gst_no= filter only ever
-        matches the primary one, so this matches against a full index of
-        every vendor's primary + additional (gstin, state) registrations,
-        built once per ZohoClient instance and reused for every lookup."""
-        self._ensure_vendor_index()
+        legitimately be either. Checking every vendor's /taxinfo up front
+        doesn't scale (one API call per vendor in the org, paid on every
+        run even for a 2-invoice batch), so this only fetches /taxinfo for
+        vendors that could plausibly match: characters 3-12 of a GSTIN are
+        the entity's PAN, and every GSTIN (primary or additional) issued to
+        the same legal entity shares that PAN -- so a primary-GSTIN miss
+        falls back to PAN-matching against the (already-fetched) vendor
+        list, and only that narrowed set gets a /taxinfo lookup."""
+        self._ensure_vendor_list()
 
         state_code = to_state_code(state)
-        same_gstin = [r for r in self._vendor_registrations if r["gstin"] == gstin]
-        matches = [r for r in same_gstin if r["state_code"] == state_code]
+        matches = self._registration_matches(gstin, state_code)
 
         if not matches:
+            pan = _pan_of(gstin)
+            candidates = self._vendors_by_pan.get(pan, []) if pan else []
+            self._ensure_taxinfo_checked(candidates)
+            matches = self._registration_matches(gstin, state_code)
+
+        if not matches:
+            same_gstin = [r for r in self._vendor_registrations if r["gstin"] == gstin]
             return VendorLookupResult(status="not_found", candidates=[r["vendor"] for r in same_gstin])
 
         vendor_ids = {r["vendor"]["contact_id"] for r in matches}
@@ -82,27 +105,49 @@ class ZohoClient:
             return VendorLookupResult(status="ambiguous", candidates=[r["vendor"] for r in matches])
         return VendorLookupResult(status="found", vendor=matches[0]["vendor"])
 
-    def _ensure_vendor_index(self) -> None:
-        with self._vendor_index_lock:
+    def _registration_matches(self, gstin: str, state_code: str) -> list[dict]:
+        return [r for r in self._vendor_registrations if r["gstin"] == gstin and r["state_code"] == state_code]
+
+    def _ensure_vendor_list(self) -> None:
+        with self._vendor_list_lock:
             if self._vendor_registrations is not None:
                 return
 
             vendors = self._list_all_vendor_contacts()
             registrations = []
+            vendors_by_pan: dict[str, list[dict]] = {}
             for vendor in vendors:
                 gstin, state_code = vendor.get("gst_no"), vendor.get("place_of_contact")
                 if gstin and state_code:
                     registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
-
-            with cf.ThreadPoolExecutor(max_workers=_TAXINFO_MAX_WORKERS) as executor:
-                taxinfo_futures = {executor.submit(self._get_taxinfo, v["contact_id"]): v for v in vendors}
-                for future, vendor in taxinfo_futures.items():
-                    for entry in future.result():
-                        gstin, state_code = entry.get("gst_no"), entry.get("place_of_contact")
-                        if gstin and state_code:
-                            registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
+                pan = _pan_of(gstin)
+                if pan:
+                    vendors_by_pan.setdefault(pan, []).append(vendor)
 
             self._vendor_registrations = registrations
+            self._vendors_by_pan = vendors_by_pan
+
+    def _ensure_taxinfo_checked(self, candidates: list[dict]) -> None:
+        to_fetch = []
+        with self._taxinfo_lock:
+            for vendor in candidates:
+                contact_id = vendor["contact_id"]
+                if contact_id not in self._taxinfo_checked:
+                    self._taxinfo_checked.add(contact_id)
+                    to_fetch.append(vendor)
+        if not to_fetch:
+            return
+
+        with cf.ThreadPoolExecutor(max_workers=min(_TAXINFO_MAX_WORKERS, len(to_fetch))) as executor:
+            futures = {executor.submit(self._get_taxinfo, v["contact_id"]): v for v in to_fetch}
+            results = [(v, future.result()) for future, v in futures.items()]
+
+        with self._registrations_append_lock:
+            for vendor, entries in results:
+                for entry in entries:
+                    gstin, state_code = entry.get("gst_no"), entry.get("place_of_contact")
+                    if gstin and state_code:
+                        self._vendor_registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
 
     def _list_all_vendor_contacts(self) -> list[dict]:
         contacts = []
