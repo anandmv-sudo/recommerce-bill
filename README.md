@@ -67,7 +67,12 @@ bill draft creation/attachment is not yet wired into the app.
   `/items` server-side with `name_contains=RTREC` alongside `hsn_or_sac` (confirmed empirically)
   rather than filtering client-side after an unfiltered call — the live org can have thousands of
   individual per-product items sharing one HSN (imported from CSV), so the RTREC_ catalog entry
-  can land well past the first page and a client-side-only filter would miss it.
+  can land well past the first page and a client-side-only filter would miss it. If the
+  additional-GSTIN fallback's PAN narrowing turns up more than one vendor contact for the exact
+  same `(gstin, state)` (a genuine duplicate elsewhere in Zoho, e.g. two related-but-distinct
+  companies sharing a PAN), it breaks the tie by picking the one candidate whose `cf_vertical_name`
+  custom field is `"Marketplace (Re-Commerce)"` -- and only for this fallback path, not for a
+  duplicate primary-GSTIN match, which stays surfaced as `ambiguous` rather than guessed.
 - **Bill creation / attachment / post-run outcome report** are not yet wired into `app.py`.
 - **Bill-level GSTIN override**: `create_bill_draft` now passes `gst_no`/`source_of_supply` from
   the invoice sheet's own `seller_gstin`/`seller_state`, not the vendor's primary GSTIN — needed

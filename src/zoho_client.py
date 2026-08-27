@@ -11,6 +11,9 @@ from .zoho_auth import get_access_token
 _TAXINFO_MAX_WORKERS = 16
 
 
+_RECOMMERCE_VERTICAL = "Marketplace (Re-Commerce)"
+
+
 def _pan_of(gstin: str | None) -> str | None:
     """Characters 3-12 (1-indexed) of a 15-digit GSTIN are the PAN of the
     entity it's registered to. Every GSTIN issued to that entity -- primary
@@ -87,12 +90,14 @@ class ZohoClient:
 
         state_code = to_state_code(state)
         matches = self._registration_matches(gstin, state_code)
+        matched_via_additional_gstin = False
 
         if not matches:
             pan = _pan_of(gstin)
             candidates = self._vendors_by_pan.get(pan, []) if pan else []
             self._ensure_taxinfo_checked(candidates)
             matches = self._registration_matches(gstin, state_code)
+            matched_via_additional_gstin = True
 
         if not matches:
             same_gstin = [r for r in self._vendor_registrations if r["gstin"] == gstin]
@@ -100,8 +105,17 @@ class ZohoClient:
 
         vendor_ids = {r["vendor"]["contact_id"] for r in matches}
         if len(vendor_ids) > 1:
-            # Same GSTIN + state matched more than one vendor contact -- a
-            # duplicate vendor record in Zoho itself. Don't guess; surface it.
+            # Same GSTIN + state matched more than one vendor contact. Only
+            # for the additional-GSTIN (PAN-narrowed) fallback -- not a
+            # duplicate primary-GSTIN match, which is always a genuine data
+            # problem in Zoho -- break the tie if exactly one candidate is
+            # tagged for this business's own vertical; otherwise don't
+            # guess, surface it.
+            if matched_via_additional_gstin:
+                vertical_matches = [r for r in matches if r["vendor"].get("cf_vertical_name") == _RECOMMERCE_VERTICAL]
+                vertical_vendor_ids = {r["vendor"]["contact_id"] for r in vertical_matches}
+                if len(vertical_vendor_ids) == 1:
+                    return VendorLookupResult(status="found", vendor=vertical_matches[0]["vendor"])
             return VendorLookupResult(status="ambiguous", candidates=[r["vendor"] for r in matches])
         return VendorLookupResult(status="found", vendor=matches[0]["vendor"])
 
