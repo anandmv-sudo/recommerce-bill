@@ -63,16 +63,20 @@ bill draft creation/attachment is not yet wired into the app.
   (undocumented in Zoho's public API docs): that endpoint returns a `tax_info_list` array of
   `{tax_info_id, tax_registration_no, place_of_supply, is_primary, trader_name, legal_name}`
   dicts — `_get_taxinfo` takes whichever list-of-dicts value is present rather than hardcoding
-  the `tax_info_list` key, in case it varies across orgs/plans. `find_item_by_hsn` filters
-  `/items` server-side with `name_contains=RTREC` alongside `hsn_or_sac` (confirmed empirically)
-  rather than filtering client-side after an unfiltered call — the live org can have thousands of
-  individual per-product items sharing one HSN (imported from CSV), so the RTREC_ catalog entry
-  can land well past the first page and a client-side-only filter would miss it. If the
-  additional-GSTIN fallback's PAN narrowing turns up more than one vendor contact for the exact
-  same `(gstin, state)` (a genuine duplicate elsewhere in Zoho, e.g. two related-but-distinct
-  companies sharing a PAN), it breaks the tie by picking the one candidate whose `cf_vertical_name`
-  custom field is `"Marketplace (Re-Commerce)"` -- and only for this fallback path, not for a
-  duplicate primary-GSTIN match, which stays surfaced as `ambiguous` rather than guessed.
+  the `tax_info_list` key, in case it varies across orgs/plans. Item resolution (by HSN code +
+  GST rate) no longer calls `/items` live at all — `src/item_catalog.py`'s `ItemCatalog` matches
+  locally against a Zoho item export the user uploads alongside the invoice sheet (see
+  `parse_item_catalog` in `src/excel_parser.py`), which avoids one `/items` call per line item.
+  `find_vendor_by_gstin`
+  matches on GSTIN alone, not `(gstin, state)` -- a GSTIN's first two digits already are its GST
+  jurisdiction/state code, so a separately-supplied state added no information and only caused
+  false `vendor_not_found` results when the invoice sheet's free-text state column (sourced from
+  the source manifest, not a fixed master field) didn't normalize to the exact state code Zoho has
+  on file. If a GSTIN match (primary or additional-GSTIN fallback) turns up more than one vendor
+  contact (a genuine duplicate elsewhere in Zoho, e.g. two related-but-distinct companies sharing a
+  PAN, or a GSTIN entered on two contacts), it breaks the tie by picking the one candidate whose
+  `cf_vertical_name` custom field is `"Marketplace (Re-Commerce)"`; if that doesn't narrow to
+  exactly one, it stays surfaced as `ambiguous` rather than guessed.
 - **Bill creation / attachment / post-run outcome report** are not yet wired into `app.py`.
 - **Bill-level GSTIN override**: `create_bill_draft` now passes `gst_no`/`source_of_supply` from
   the invoice sheet's own `seller_gstin`/`seller_state`, not the vendor's primary GSTIN — needed

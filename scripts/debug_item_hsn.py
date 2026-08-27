@@ -2,18 +2,16 @@
 issues when two RTREC_ items share the same HSN code.
 
 Usage:
-    python -m scripts.debug_item_hsn <HSN_CODE> [--env live|test] [--rate 18]
+    python -m scripts.debug_item_hsn <HSN_CODE> [--env live|test]
 
 Prints every RTREC_ item Zoho's /items list returns for this HSN, with its
-raw item_tax_preferences as seen in the LIST response -- this is the same
-data find_item_by_hsn() in src/zoho_client.py uses to disambiguate by rate,
-so if item_tax_preferences comes back empty/missing here even though the
-item clearly has a GST rate configured in the Zoho UI, that's the bug: the
-list endpoint doesn't carry full tax preference data and a detail call
-(GET /items/{item_id}) is needed instead.
-
-With --rate, also calls the REAL src.zoho_client.ZohoClient.find_item_by_hsn
-directly (the exact function the app calls) and prints its result.
+raw item_tax_preferences as seen in the LIST response -- useful for
+comparing against what ends up in an uploaded Zoho item export (see
+src/item_catalog.py, which the app now uses to resolve items locally
+instead of calling /items live). If item_tax_preferences comes back
+empty/missing here even though the item clearly has a GST rate configured
+in the Zoho UI, that's the bug: the list endpoint doesn't carry full tax
+preference data and a detail call (GET /items/{item_id}) is needed instead.
 """
 
 import argparse
@@ -23,7 +21,6 @@ import sys
 import requests
 
 from src.config import load_zoho_config
-from src.zoho_client import ZohoClient
 
 
 def _headers(cfg):
@@ -65,7 +62,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("hsn_code")
     parser.add_argument("--env", choices=["live", "test"], default="live")
-    parser.add_argument("--rate", type=float, default=None, help="Also call the real find_item_by_hsn(hsn_code, rate)")
     args = parser.parse_args()
 
     cfg = load_zoho_config(args.env)
@@ -83,15 +79,6 @@ def main():
         print(f"  item_tax_preferences (from DETAIL response): {json.dumps(detail.get('item_tax_preferences'))}")
         print(f"  tax_percentage (top-level, DETAIL response): {detail.get('tax_percentage')!r}")
         print()
-
-    if args.rate is not None:
-        result = ZohoClient(cfg).find_item_by_hsn(args.hsn_code, args.rate)
-        print(f"--- Calling the REAL find_item_by_hsn({args.hsn_code!r}, {args.rate!r}) ---")
-        print(f"status: {result.status}")
-        if result.item:
-            print(f"item: {result.item.get('name')} (item_id={result.item.get('item_id')})")
-        if result.candidates:
-            print(f"candidates: {[c.get('name') for c in result.candidates]}")
 
 
 if __name__ == "__main__":

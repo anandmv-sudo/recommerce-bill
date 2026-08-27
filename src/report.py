@@ -4,6 +4,7 @@ from collections import Counter
 import pandas as pd
 
 from .eway_bill_client import EwayBillClient
+from .item_catalog import ItemCatalog
 from .zoho_client import ZohoClient
 
 # Flags that must NOT block bill draft creation -- the E-way Bill PDF and
@@ -22,34 +23,32 @@ _MAX_WORKERS = 16
 
 
 def _prefetch(df: pd.DataFrame, eway_bill_mapping: dict[str, str], zoho: ZohoClient, eway: EwayBillClient):
-    """Runs every distinct vendor/item/duplicate/E-way Bill lookup this batch
+    """Runs every distinct vendor/duplicate/E-way Bill lookup this batch
     needs concurrently (each is an independent Zoho/GSP API call), instead of
-    one row at a time. A batch with many rows but few unique invoices/HSNs
-    (typical -- rows repeat the same seller and HSN codes) collapses to a
-    handful of concurrent calls instead of a slow serial chain."""
-    vendor_keys = {(row.seller_gstin, row.seller_state) for row in df.itertuples()}
-    item_keys = {(str(row.hsn_code), float(row.tax_rate)) for row in df.itertuples()}
+    one row at a time. A batch with many rows but few unique invoices
+    (typical -- rows repeat the same seller) collapses to a handful of
+    concurrent calls instead of a slow serial chain. Item lookups aren't part
+    of this -- ItemCatalog resolves those locally from the uploaded item
+    export, no API call needed."""
+    vendor_keys = set(df["seller_gstin"])
     invoice_numbers = set(df["invoice_number"])
     eway_numbers = {eway_bill_mapping.get(inv) for inv in invoice_numbers if eway_bill_mapping.get(inv)}
 
-    vendor_cache, item_cache, duplicate_bill_cache, eway_cache = {}, {}, {}, {}
+    vendor_cache, duplicate_bill_cache, eway_cache = {}, {}, {}
 
     with cf.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        vendor_futures = {executor.submit(zoho.find_vendor_by_gstin, *k): k for k in vendor_keys}
-        item_futures = {executor.submit(zoho.find_item_by_hsn, *k): k for k in item_keys}
+        vendor_futures = {executor.submit(zoho.find_vendor_by_gstin, k): k for k in vendor_keys}
         bill_futures = {executor.submit(zoho.find_bill_by_number, k): k for k in invoice_numbers}
         eway_futures = {executor.submit(eway.get_by_number, k): k for k in eway_numbers}
 
         for fut, key in vendor_futures.items():
             vendor_cache[key] = fut.result()
-        for fut, key in item_futures.items():
-            item_cache[key] = fut.result()
         for fut, key in bill_futures.items():
             duplicate_bill_cache[key] = fut.result() is not None
         for fut, key in eway_futures.items():
             eway_cache[key] = fut.result() is not None
 
-    return vendor_cache, item_cache, duplicate_bill_cache, eway_cache
+    return vendor_cache, duplicate_bill_cache, eway_cache
 
 
 def build_match_report(
@@ -58,6 +57,7 @@ def build_match_report(
     eway_bill_mapping: dict[str, str],
     zoho: ZohoClient,
     eway: EwayBillClient,
+    item_catalog: ItemCatalog,
 ) -> pd.DataFrame:
     """Pre-approval report: one row per excel row (i.e. per line item), with
     a ready/flag verdict. Multiple rows can share an invoice_number -- that's
@@ -67,7 +67,7 @@ def build_match_report(
     but doesn't block readiness -- those are best-effort attachments, not
     prerequisites for creating the bill draft itself."""
     eway_number_counts = Counter(eway_bill_mapping.values())
-    vendor_cache, item_cache, duplicate_bill_cache, eway_cache = _prefetch(df, eway_bill_mapping, zoho, eway)
+    vendor_cache, duplicate_bill_cache, eway_cache = _prefetch(df, eway_bill_mapping, zoho, eway)
 
     rows = []
     for _, record in df.iterrows():
@@ -79,7 +79,7 @@ def build_match_report(
         if not pdf_path:
             flags.append("pdf_missing")
 
-        vendor_lookup = vendor_cache[(record["seller_gstin"], record["seller_state"])]
+        vendor_lookup = vendor_cache[record["seller_gstin"]]
         vendor = vendor_lookup.vendor
         if vendor_lookup.status == "not_found":
             flags.append("vendor_not_found")
@@ -93,7 +93,7 @@ def build_match_report(
         elif not eway_cache[eway_bill_number]:
             flags.append("eway_bill_lookup_failed")
 
-        item_lookup = item_cache[(str(record["hsn_code"]), float(record["tax_rate"]))]
+        item_lookup = item_catalog.find_item_by_hsn(record["hsn_code"], float(record["tax_rate"]))
         item = item_lookup.item
         if item_lookup.status == "not_found":
             flags.append("item_not_found")

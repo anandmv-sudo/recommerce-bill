@@ -14,6 +14,15 @@ REQUIRED_COLUMNS = [
 
 EWAY_BILL_MAPPING_REQUIRED_COLUMNS = ["invoice_number", "eway_bill_number"]
 
+ITEM_CATALOG_REQUIRED_COLUMNS = [
+    "item_id",
+    "item_name",
+    "hsn/sac",
+    "intra_state_tax_rate",
+    "inter_state_tax_rate",
+    "status",
+]
+
 # Column mapping for the Amazon Liquidator manifest CSV format (e.g.
 # LIQUIDATOR-<code>-LIQUIDATOR-<uuid>.csv), keyed by each source column's
 # name after the same normalization applied below (lowercased, spaces -> _).
@@ -58,6 +67,17 @@ def _format_integer_string(value):
         return str(int(float(value)))
     except (TypeError, ValueError):
         return str(value).strip()
+
+
+def _clean_id_string(value) -> str:
+    """Strips a trailing ".0" from an ID that pandas inferred as float (e.g.
+    a column with a blank cell), without ever round-tripping through float()
+    -- unlike _format_integer_string, this is used for Zoho item IDs, which
+    can be 18+ digits and would silently lose precision in a float64."""
+    if pd.isna(value):
+        return ""
+    s = str(value).strip()
+    return s[:-2] if s.endswith(".0") else s
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -180,3 +200,31 @@ def parse_eway_bill_mapping(file) -> dict[str, str]:
     df["invoice_number"] = df["invoice_number"].astype(str).str.strip()
     df["eway_bill_number"] = df["eway_bill_number"].apply(_format_integer_string)
     return dict(zip(df["invoice_number"], df["eway_bill_number"]))
+
+
+def parse_item_catalog(file) -> pd.DataFrame:
+    """Parses a Zoho Books item export (Items module -> Export, "Item"
+    sheet) into the (item_id, name, hsn_code, intra_state_tax_rate,
+    inter_state_tax_rate) shape ItemCatalog needs to resolve invoice line
+    items locally instead of calling Zoho's /items API per line item.
+
+    Restricted to Active, RTREC_-prefixed rows -- the same restriction
+    ZohoClient.find_item_by_hsn used to apply server-side -- in case a
+    future export isn't pre-filtered the way the current one is."""
+    df = _read_table(file)
+    df = _normalize_columns(df)
+
+    missing = [c for c in ITEM_CATALOG_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Item export excel is missing required columns: {missing}")
+
+    df = df[df["status"].astype(str).str.strip().str.lower() == "active"]
+    df = df[df["item_name"].astype(str).str.upper().str.startswith("RTREC")]
+
+    df = df.rename(columns={"item_name": "name", "hsn/sac": "hsn_code"})
+    df["item_id"] = df["item_id"].apply(_clean_id_string)
+    df["hsn_code"] = df["hsn_code"].apply(_format_integer_string)
+    df["intra_state_tax_rate"] = df["intra_state_tax_rate"].astype(float)
+    df["inter_state_tax_rate"] = df["inter_state_tax_rate"].astype(float)
+
+    return df[["item_id", "name", "hsn_code", "intra_state_tax_rate", "inter_state_tax_rate"]]

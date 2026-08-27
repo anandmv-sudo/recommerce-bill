@@ -2,8 +2,9 @@ import streamlit as st
 
 from src.bill_creator import create_bills_for_approved
 from src.config import load_eway_bill_config, load_zoho_config
-from src.excel_parser import parse_eway_bill_mapping, parse_invoice_sheet
+from src.excel_parser import parse_eway_bill_mapping, parse_invoice_sheet, parse_item_catalog
 from src.eway_bill_client import EwayBillClient
+from src.item_catalog import ItemCatalog
 from src.pdf_matcher import index_pdfs_by_invoice_number
 from src.report import build_match_report, ready_invoice_numbers
 from src.zoho_client import ZohoClient
@@ -20,16 +21,18 @@ else:
 
 st.markdown(
     "Upload the invoice sheet, the E-way Bill mapping sheet "
-    "(invoice_number -> eway_bill_number), and the ZIP of invoice PDFs. "
-    "Excel (.xlsx/.xls) or .csv both work for the two sheets. "
+    "(invoice_number -> eway_bill_number), the Zoho item export (Items module "
+    "-> Export, \"Item\" sheet), and the ZIP of invoice PDFs. "
+    "Excel (.xlsx/.xls) or .csv both work for the sheets. "
     "Review the match report below before approving any rows for creation."
 )
 
 excel_file = st.file_uploader("Invoice sheet", type=["xlsx", "xls", "csv"])
 eway_mapping_file = st.file_uploader("E-way Bill mapping sheet", type=["xlsx", "xls", "csv"])
+item_catalog_file = st.file_uploader("Zoho item export", type=["xlsx", "xls", "csv"])
 zip_file = st.file_uploader("Invoice PDFs (ZIP)", type=["zip"])
 
-if excel_file and eway_mapping_file and zip_file:
+if excel_file and eway_mapping_file and item_catalog_file and zip_file:
     if st.button("Generate match report"):
         status = st.status("Generating match report...", expanded=True)
         try:
@@ -41,6 +44,11 @@ if excel_file and eway_mapping_file and zip_file:
             eway_bill_mapping = parse_eway_bill_mapping(eway_mapping_file)
             status.write(f"Parsed {len(eway_bill_mapping)} invoice -> E-way Bill number mapping(s).")
 
+            status.write("Parsing Zoho item export...")
+            item_catalog_df = parse_item_catalog(item_catalog_file)
+            item_catalog = ItemCatalog(item_catalog_df)
+            status.write(f"Loaded {len(item_catalog_df)} item(s) from the export.")
+
             status.write("Indexing invoice PDFs from the ZIP...")
             pdf_index = index_pdfs_by_invoice_number(zip_file)
             status.write(f"Found {len(pdf_index)} PDF(s) in the ZIP.")
@@ -48,12 +56,13 @@ if excel_file and eway_mapping_file and zip_file:
             status.write(f"Checking each row against Zoho ({env_choice}) and the E-way Bill API...")
             zoho = ZohoClient(load_zoho_config(zoho_environment))
             eway = EwayBillClient(load_eway_bill_config())
-            report_df = build_match_report(df, pdf_index, eway_bill_mapping, zoho, eway)
+            report_df = build_match_report(df, pdf_index, eway_bill_mapping, zoho, eway, item_catalog)
 
             st.session_state["report_df"] = report_df
             st.session_state["parsed_df"] = df
             st.session_state["pdf_index"] = pdf_index
             st.session_state["eway_bill_mapping"] = eway_bill_mapping
+            st.session_state["item_catalog"] = item_catalog
             status.update(label=f"Match report ready -- {len(report_df)} row(s).", state="complete", expanded=False)
         except Exception as exc:  # noqa: BLE001 -- surfaced directly to the user, with full traceback
             status.update(label="Failed to build match report", state="error", expanded=True)
@@ -99,6 +108,7 @@ if "report_df" in st.session_state:
                 st.session_state["eway_bill_mapping"],
                 zoho,
                 eway,
+                st.session_state["item_catalog"],
                 on_result=_log_outcome,
             )
             st.session_state["outcome_df"] = outcome_df

@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import requests
 
 from .config import ZohoConfig
-from .state_codes import to_state_code
 from .zoho_auth import get_access_token
 
 _TAXINFO_MAX_WORKERS = 16
@@ -27,13 +26,6 @@ def _pan_of(gstin: str | None) -> str | None:
 class VendorLookupResult:
     status: str  # "found" | "not_found" | "ambiguous"
     vendor: dict | None = None
-    candidates: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class ItemLookupResult:
-    status: str  # "found" | "not_found" | "ambiguous"
-    item: dict | None = None
     candidates: list[dict] = field(default_factory=list)
 
 
@@ -74,7 +66,7 @@ class ZohoClient:
             raise RuntimeError(f"Zoho API error {response.status_code}: {body}")
         return body
 
-    def find_vendor_by_gstin(self, gstin: str, state: str) -> VendorLookupResult:
+    def find_vendor_by_gstin(self, gstin: str) -> VendorLookupResult:
         """A vendor in Zoho Books can have one primary GSTIN plus any number
         of additional GSTINs (registered per state, exposed via each
         contact's /taxinfo sub-resource) -- an invoice's seller GSTIN can
@@ -85,42 +77,39 @@ class ZohoClient:
         the entity's PAN, and every GSTIN (primary or additional) issued to
         the same legal entity shares that PAN -- so a primary-GSTIN miss
         falls back to PAN-matching against the (already-fetched) vendor
-        list, and only that narrowed set gets a /taxinfo lookup."""
+        list, and only that narrowed set gets a /taxinfo lookup.
+
+        Matches on GSTIN alone -- the first two digits of a GSTIN already
+        are the state's GST jurisdiction code, so a separately-supplied
+        state adds no information and only introduces failures when the
+        source sheet's free-text state column doesn't normalize cleanly."""
         self._ensure_vendor_list()
 
-        state_code = to_state_code(state)
-        matches = self._registration_matches(gstin, state_code)
-        matched_via_additional_gstin = False
+        matches = self._registration_matches(gstin)
 
         if not matches:
             pan = _pan_of(gstin)
             candidates = self._vendors_by_pan.get(pan, []) if pan else []
             self._ensure_taxinfo_checked(candidates)
-            matches = self._registration_matches(gstin, state_code)
-            matched_via_additional_gstin = True
+            matches = self._registration_matches(gstin)
 
         if not matches:
-            same_gstin = [r for r in self._vendor_registrations if r["gstin"] == gstin]
-            return VendorLookupResult(status="not_found", candidates=[r["vendor"] for r in same_gstin])
+            return VendorLookupResult(status="not_found")
 
         vendor_ids = {r["vendor"]["contact_id"] for r in matches}
         if len(vendor_ids) > 1:
-            # Same GSTIN + state matched more than one vendor contact. Only
-            # for the additional-GSTIN (PAN-narrowed) fallback -- not a
-            # duplicate primary-GSTIN match, which is always a genuine data
-            # problem in Zoho -- break the tie if exactly one candidate is
-            # tagged for this business's own vertical; otherwise don't
-            # guess, surface it.
-            if matched_via_additional_gstin:
-                vertical_matches = [r for r in matches if r["vendor"].get("cf_vertical_name") == _RECOMMERCE_VERTICAL]
-                vertical_vendor_ids = {r["vendor"]["contact_id"] for r in vertical_matches}
-                if len(vertical_vendor_ids) == 1:
-                    return VendorLookupResult(status="found", vendor=vertical_matches[0]["vendor"])
+            # Same GSTIN matched more than one vendor contact -- break the
+            # tie if exactly one candidate is tagged for this business's own
+            # vertical; otherwise don't guess, surface it.
+            vertical_matches = [r for r in matches if r["vendor"].get("cf_vertical_name") == _RECOMMERCE_VERTICAL]
+            vertical_vendor_ids = {r["vendor"]["contact_id"] for r in vertical_matches}
+            if len(vertical_vendor_ids) == 1:
+                return VendorLookupResult(status="found", vendor=vertical_matches[0]["vendor"])
             return VendorLookupResult(status="ambiguous", candidates=[r["vendor"] for r in matches])
         return VendorLookupResult(status="found", vendor=matches[0]["vendor"])
 
-    def _registration_matches(self, gstin: str, state_code: str) -> list[dict]:
-        return [r for r in self._vendor_registrations if r["gstin"] == gstin and r["state_code"] == state_code]
+    def _registration_matches(self, gstin: str) -> list[dict]:
+        return [r for r in self._vendor_registrations if r["gstin"] == gstin]
 
     def _ensure_vendor_list(self) -> None:
         with self._vendor_list_lock:
@@ -201,55 +190,6 @@ class ZohoClient:
             if isinstance(value, list) and all(isinstance(item, dict) for item in value):
                 return value
         return []
-
-    def find_item_by_hsn(self, hsn_code: str, tax_rate: float) -> ItemLookupResult:
-        """Resolves an existing Zoho item (never creates one) by HSN code,
-        restricted to the "RTREC_" prefixed generic HSN-category catalog
-        (e.g. RTREC_CEILING FANS) rather than the full per-product item list
-        -- HSN code alone is ambiguous against the full catalog (the same
-        HSN can cover hundreds of distinct products), and even within the
-        RTREC_ catalog some HSN codes have more than one entry (e.g. two
-        near-duplicate wordings for the same heading, at different GST
-        rates). Matching the row's GST rate (from the Amazon excel) against
-        each candidate's own tax_percentage resolves most of those -- e.g.
-        HSN 73239390 has one RTREC_ entry at 5% and another at 18%. Where
-        candidates still share both HSN and rate (a true duplicate in the
-        catalog, e.g. two RTREC_ entries for the same HSN both at 18%),
-        that's surfaced as ambiguous rather than guessed.
-
-        The name_contains=RTREC filter is applied server-side (confirmed
-        empirically) rather than just filtering client-side after an
-        unfiltered /items?hsn_or_sac= call -- a shared HSN can have
-        thousands of individual per-product items in the live org (each
-        imported from CSV), well past the first page of results, so a
-        client-side-only filter could miss the RTREC_ catalog entry
-        entirely if it doesn't happen to land on page 1."""
-        response = requests.get(
-            f"{self.cfg.api_base_url}/items",
-            headers=self._headers(),
-            params=self._params({"hsn_or_sac": hsn_code, "name_contains": "RTREC"}),
-            timeout=30,
-        )
-        items = self._check(response).get("items", [])
-        rtrec_matches = [
-            it
-            for it in items
-            if it.get("hsn_or_sac") == str(hsn_code) and (it.get("name") or "").upper().startswith("RTREC")
-        ]
-        matches = [
-            it
-            for it in rtrec_matches
-            if any(
-                abs(pref.get("tax_percentage", -1) - tax_rate) < 0.01
-                for pref in it.get("item_tax_preferences", [])
-            )
-        ]
-
-        if not matches:
-            return ItemLookupResult(status="not_found", candidates=rtrec_matches)
-        if len(matches) > 1:
-            return ItemLookupResult(status="ambiguous", candidates=matches)
-        return ItemLookupResult(status="found", item=matches[0])
 
     def find_bill_by_number(self, bill_number: str) -> dict | None:
         response = requests.get(

@@ -7,6 +7,7 @@ import pandas as pd
 
 from . import local_state
 from .eway_bill_client import EwayBillClient
+from .item_catalog import ItemCatalog
 from .state_codes import to_state_code
 from .zoho_client import ZohoClient
 
@@ -40,6 +41,7 @@ def create_bill_for_invoice(
     eway_bill_number: str | None,
     zoho: ZohoClient,
     eway: EwayBillClient,
+    item_catalog: ItemCatalog,
 ) -> InvoiceOutcome:
     """Creates one Zoho bill draft for one invoice number, with one line item
     per row belonging to that invoice (e.g. one per product in a multi-item
@@ -56,7 +58,7 @@ def create_bill_for_invoice(
     invoice_number = records.iloc[0]["invoice_number"]
     seller_gstin = records.iloc[0]["seller_gstin"]
     try:
-        return _create_bill_for_invoice(records, pdf_path, eway_bill_number, zoho, eway)
+        return _create_bill_for_invoice(records, pdf_path, eway_bill_number, zoho, eway, item_catalog)
     except Exception as exc:  # noqa: BLE001 -- last-resort guard, see docstring
         return InvoiceOutcome(
             invoice_number=invoice_number,
@@ -74,6 +76,7 @@ def _create_bill_for_invoice(
     eway_bill_number: str | None,
     zoho: ZohoClient,
     eway: EwayBillClient,
+    item_catalog: ItemCatalog,
 ) -> InvoiceOutcome:
     first = records.iloc[0]
     invoice_number = first["invoice_number"]
@@ -94,7 +97,7 @@ def _create_bill_for_invoice(
         outcome.error = "duplicate_previously_billed (caught at creation time)"
         return outcome
 
-    vendor_lookup = zoho.find_vendor_by_gstin(seller_gstin, first["seller_state"])
+    vendor_lookup = zoho.find_vendor_by_gstin(seller_gstin)
     if vendor_lookup.status != "found":
         outcome.status = "failed"
         outcome.error = f"vendor_lookup_{vendor_lookup.status}"
@@ -109,7 +112,7 @@ def _create_bill_for_invoice(
         hsn_code = str(record["hsn_code"])
         tax_rate = float(record["tax_rate"])
 
-        item_lookup = zoho.find_item_by_hsn(hsn_code, tax_rate)
+        item_lookup = item_catalog.find_item_by_hsn(hsn_code, tax_rate)
         if item_lookup.status != "found":
             outcome.status = "failed"
             outcome.error = f"item_lookup_{item_lookup.status} (hsn={hsn_code})"
@@ -211,6 +214,7 @@ def create_bills_for_approved(
     eway_bill_mapping: dict[str, str],
     zoho: ZohoClient,
     eway: EwayBillClient,
+    item_catalog: ItemCatalog,
     on_result=None,
 ) -> pd.DataFrame:
     """Creates one bill per approved invoice number (with one line item per
@@ -225,7 +229,7 @@ def create_bills_for_approved(
         records = df[df["invoice_number"] == invoice_number]
         pdf_path = pdf_index.get(invoice_number)
         eway_bill_number = eway_bill_mapping.get(invoice_number)
-        outcome = create_bill_for_invoice(records, pdf_path, eway_bill_number, zoho, eway)
+        outcome = create_bill_for_invoice(records, pdf_path, eway_bill_number, zoho, eway, item_catalog)
         outcomes.append(outcome.__dict__)
         if on_result:
             on_result(outcome)
