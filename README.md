@@ -59,10 +59,11 @@ bill draft creation/attachment is not yet wired into the app.
   it falls back to additional GSTINs: characters 3-12 of a GSTIN are the entity's PAN, shared by
   every GSTIN (primary or additional) issued to that entity, so the fallback narrows to vendors
   whose primary GSTIN shares the same PAN and only calls `/contacts/{contact_id}/taxinfo` for
-  that (usually tiny) candidate set, instead of every vendor in the org. The exact JSON key Zoho
-  uses for the additional-GSTIN list in that endpoint's response isn't confirmed either —
-  `_get_taxinfo` takes whichever list-of-dicts value is present rather than a hardcoded key, but
-  this needs a sandbox check too.
+  that (usually tiny) candidate set, instead of every vendor in the org. Confirmed empirically
+  (undocumented in Zoho's public API docs): that endpoint returns a `tax_info_list` array of
+  `{tax_info_id, tax_registration_no, place_of_supply, is_primary, trader_name, legal_name}`
+  dicts — `_get_taxinfo` takes whichever list-of-dicts value is present rather than hardcoding
+  the `tax_info_list` key, in case it varies across orgs/plans.
 - **Bill creation / attachment / post-run outcome report** are not yet wired into `app.py`.
 - Duplicate checking against **previously created bills** currently only checks the local
   `local_state.db` (populated by this app itself) — it does not yet cross-check Zoho directly for

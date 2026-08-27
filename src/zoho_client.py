@@ -145,7 +145,11 @@ class ZohoClient:
         with self._registrations_append_lock:
             for vendor, entries in results:
                 for entry in entries:
-                    gstin, state_code = entry.get("gst_no"), entry.get("place_of_contact")
+                    # /taxinfo entries use different field names than the
+                    # /contacts list response (confirmed empirically): the
+                    # GSTIN is "tax_registration_no", not "gst_no", and the
+                    # state is "place_of_supply", not "place_of_contact".
+                    gstin, state_code = entry.get("tax_registration_no"), entry.get("place_of_supply")
                     if gstin and state_code:
                         self._vendor_registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
 
@@ -166,9 +170,12 @@ class ZohoClient:
             page += 1
 
     def _get_taxinfo(self, contact_id: str) -> list[dict]:
-        """The list-of-additional-GSTINs response key isn't confirmed against
-        Zoho's docs, so this takes whichever list-of-dicts value is present
-        in the response body rather than guessing a specific key name."""
+        """Returns the raw entries from Zoho's response -- confirmed
+        (empirically, undocumented in Zoho's public API docs) to be a
+        "tax_info_list" array of {tax_info_id, tax_registration_no,
+        place_of_supply, is_primary, trader_name, legal_name} dicts. Takes
+        whichever list-of-dicts value is present rather than hardcoding the
+        "tax_info_list" key, in case that key name varies across orgs/plans."""
         response = requests.get(
             f"{self.cfg.api_base_url}/contacts/{contact_id}/taxinfo",
             headers=self._headers(),
