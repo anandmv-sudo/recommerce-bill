@@ -16,7 +16,7 @@ more than 6-7 GSTINs), not the whole org. Prints:
 With --contact-id, it skips the scan and just dumps that one vendor's
 contact record + raw /taxinfo response.
 
-With --state, it also calls the REAL src.zoho_client.ZohoClient.find_vendor_by_gstin
+With --real, it also calls the REAL src.zoho_client.ZohoClient.find_vendor_by_gstin
 directly (the exact function the app calls) and prints its result -- this is
 the only mode that actually exercises the production code path end to end,
 rather than a diagnostic re-implementation of it that could itself be stale
@@ -34,9 +34,9 @@ from src.zoho_auth import get_access_token
 from src.zoho_client import ZohoClient, _pan_of
 
 
-def call_real_find_vendor_by_gstin(cfg, gstin, state):
-    result = ZohoClient(cfg).find_vendor_by_gstin(gstin, state)
-    print(f"\n--- Calling the REAL find_vendor_by_gstin({gstin!r}, {state!r}) ---")
+def call_real_find_vendor_by_gstin(cfg, gstin):
+    result = ZohoClient(cfg).find_vendor_by_gstin(gstin)
+    print(f"\n--- Calling the REAL find_vendor_by_gstin({gstin!r}) ---")
     print(f"status: {result.status}")
     if result.vendor:
         print(f"vendor: {result.vendor.get('contact_name')} (contact_id={result.vendor.get('contact_id')})")
@@ -156,7 +156,7 @@ def main():
     parser.add_argument("gstin")
     parser.add_argument("--env", choices=["live", "test"], default="live")
     parser.add_argument("--contact-id", default=None, help="Skip the scan, dump this one vendor's record + taxinfo")
-    parser.add_argument("--state", default=None, help="Also call the real find_vendor_by_gstin(gstin, state)")
+    parser.add_argument("--real", action="store_true", help="Also call the real find_vendor_by_gstin(gstin)")
     args = parser.parse_args()
 
     cfg = load_zoho_config(args.env)
@@ -166,8 +166,8 @@ def main():
     else:
         scan_for_gstin(cfg, args.gstin)
 
-    if args.state:
-        call_real_find_vendor_by_gstin(cfg, args.gstin, args.state)
+    if args.real:
+        call_real_find_vendor_by_gstin(cfg, args.gstin)
 
 
 if __name__ == "__main__":
