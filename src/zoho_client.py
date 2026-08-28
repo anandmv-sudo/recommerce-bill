@@ -46,6 +46,7 @@ class ZohoClient:
         self._vendors_by_pan: dict[str, list[dict]] | None = None
         self._vendor_list_lock = threading.Lock()
         self._taxinfo_checked: set[str] = set()
+        self._taxinfo_in_progress: dict[str, threading.Event] = {}
         self._taxinfo_lock = threading.Lock()
         self._registrations_append_lock = threading.Lock()
 
@@ -131,30 +132,53 @@ class ZohoClient:
             self._vendors_by_pan = vendors_by_pan
 
     def _ensure_taxinfo_checked(self, candidates: list[dict]) -> None:
+        """Fetches /taxinfo for every not-yet-checked candidate, exactly
+        once per contact_id even when called concurrently for different
+        target GSTINs that happen to share a candidate vendor (e.g. two
+        GSTINs under the same PAN). A thread that finds another thread
+        already fetching a given contact_id waits on that fetch's Event
+        instead of returning immediately -- returning immediately was the
+        bug: the caller would then re-check _vendor_registrations before
+        the in-flight fetch had appended anything, and see a false
+        not_found for a GSTIN that does exist."""
         to_fetch = []
+        to_wait = []
         with self._taxinfo_lock:
             for vendor in candidates:
                 contact_id = vendor["contact_id"]
-                if contact_id not in self._taxinfo_checked:
+                if contact_id in self._taxinfo_checked:
+                    continue
+                in_progress = self._taxinfo_in_progress.get(contact_id)
+                if in_progress is not None:
+                    to_wait.append(in_progress)
+                    continue
+                self._taxinfo_in_progress[contact_id] = threading.Event()
+                to_fetch.append(vendor)
+
+        if to_fetch:
+            with cf.ThreadPoolExecutor(max_workers=min(_TAXINFO_MAX_WORKERS, len(to_fetch))) as executor:
+                futures = {executor.submit(self._get_taxinfo, v["contact_id"]): v for v in to_fetch}
+                results = [(v, future.result()) for future, v in futures.items()]
+
+            with self._registrations_append_lock:
+                for vendor, entries in results:
+                    for entry in entries:
+                        # /taxinfo entries use different field names than the
+                        # /contacts list response (confirmed empirically): the
+                        # GSTIN is "tax_registration_no", not "gst_no", and the
+                        # state is "place_of_supply", not "place_of_contact".
+                        gstin, state_code = entry.get("tax_registration_no"), entry.get("place_of_supply")
+                        if gstin and state_code:
+                            self._vendor_registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
+
+            with self._taxinfo_lock:
+                for vendor in to_fetch:
+                    contact_id = vendor["contact_id"]
                     self._taxinfo_checked.add(contact_id)
-                    to_fetch.append(vendor)
-        if not to_fetch:
-            return
+                    self._taxinfo_in_progress.pop(contact_id).set()
 
-        with cf.ThreadPoolExecutor(max_workers=min(_TAXINFO_MAX_WORKERS, len(to_fetch))) as executor:
-            futures = {executor.submit(self._get_taxinfo, v["contact_id"]): v for v in to_fetch}
-            results = [(v, future.result()) for future, v in futures.items()]
-
-        with self._registrations_append_lock:
-            for vendor, entries in results:
-                for entry in entries:
-                    # /taxinfo entries use different field names than the
-                    # /contacts list response (confirmed empirically): the
-                    # GSTIN is "tax_registration_no", not "gst_no", and the
-                    # state is "place_of_supply", not "place_of_contact".
-                    gstin, state_code = entry.get("tax_registration_no"), entry.get("place_of_supply")
-                    if gstin and state_code:
-                        self._vendor_registrations.append({"gstin": gstin, "state_code": state_code, "vendor": vendor})
+        for event in to_wait:
+            event.wait()
 
     def _list_all_vendor_contacts(self) -> list[dict]:
         contacts = []
