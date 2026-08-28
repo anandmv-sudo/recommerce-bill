@@ -28,7 +28,8 @@ class ZohoConfig:
 @dataclass(frozen=True)
 class EwayBillConfig:
     base_url: str
-    auth_token: str
+    gsp_app_id: str
+    gsp_app_secret: str
     gstin: str
     username: str
     password: str
@@ -52,7 +53,8 @@ def load_zoho_config(environment: str = "live") -> ZohoConfig:
 def load_eway_bill_config() -> EwayBillConfig:
     return EwayBillConfig(
         base_url=os.environ.get("EWAYBILL_API_BASE_URL", ""),
-        auth_token=os.environ.get("EWAYBILL_AUTH_TOKEN", ""),
+        gsp_app_id=os.environ.get("EWAYBILL_GSP_APP_ID", ""),
+        gsp_app_secret=os.environ.get("EWAYBILL_GSP_APP_SECRET", ""),
         gstin=os.environ.get("EWAYBILL_GSTIN", ""),
         username=os.environ.get("EWAYBILL_USERNAME", ""),
         password=os.environ.get("EWAYBILL_PASSWORD", ""),

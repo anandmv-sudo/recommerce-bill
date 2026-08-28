@@ -2,7 +2,7 @@ import uuid
 
 import requests
 
-from . import eway_bill_pdf
+from . import eway_bill_auth, eway_bill_pdf
 from .config import EwayBillConfig
 
 
@@ -20,7 +20,7 @@ class EwayBillClient:
     def _headers(self, request_id: str | None = None) -> dict:
         return {
             "gstin": self.cfg.gstin,
-            "Authorization": f"Bearer {self.cfg.auth_token}",
+            "Authorization": f"Bearer {eway_bill_auth.get_access_token(self.cfg)}",
             "Content-Type": "application/json",
             "requestid": request_id or str(uuid.uuid4()),
             "username": self.cfg.username,
@@ -31,7 +31,11 @@ class EwayBillClient:
         """Fetch E-way Bill details by E-way Bill number.
 
         Returns None if the API reports the E-way Bill doesn't exist; raises
-        for any other failure (auth, transport, unexpected error shape).
+        for any other failure (auth, transport, unexpected error shape). A
+        401/403 -- the cached GSP token being rejected as unauthorized even
+        though it wasn't due for its proactive refresh yet (revoked early,
+        clock drift) -- is retried once with a forced-fresh token before
+        giving up.
         """
         response = requests.get(
             f"{self.cfg.base_url}/enriched/ewb/ewayapi/GetEwayBill",
@@ -39,6 +43,14 @@ class EwayBillClient:
             params={"ewbNo": eway_bill_number},
             timeout=30,
         )
+        if response.status_code in (401, 403):
+            eway_bill_auth.invalidate(self.cfg)
+            response = requests.get(
+                f"{self.cfg.base_url}/enriched/ewb/ewayapi/GetEwayBill",
+                headers=self._headers(),
+                params={"ewbNo": eway_bill_number},
+                timeout=30,
+            )
         response.raise_for_status()
         body = response.json()
 

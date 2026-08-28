@@ -50,7 +50,11 @@ bill draft creation/attachment is not yet wired into the app.
 
 ## Known gaps before this is production-ready
 
-- **E-way Bill API**: waiting on the spec to be provided; `src/eway_bill_client.py` is a stub.
+- **E-way Bill auth**: `src/eway_bill_auth.py` mints and caches its own GSP access token via
+  `POST /gsp/authenticate?grant_type=token` (using the long-lived `EWAYBILL_GSP_APP_ID`/
+  `EWAYBILL_GSP_APP_SECRET` app credentials), refreshing proactively before the token's
+  `expires_in` (observed ~17 days) and reactively on a 401/403 from `GetEwayBill` -- same pattern
+  as `src/zoho_auth.py`. There's no static `EWAYBILL_AUTH_TOKEN` in `.env` anymore.
 - **Zoho filter support**: `find_bill_by_number` in `src/zoho_client.py` assumes server-side
   filtering by `bill_number` — this isn't confirmed in Zoho's public docs and needs verifying
   against a sandbox org. `find_vendor_by_gstin` no longer relies on server-side `gst_no`
