@@ -62,3 +62,16 @@ def load_eway_bill_config() -> EwayBillConfig:
 
 
 LOCAL_STATE_DB_PATH = os.environ.get("LOCAL_STATE_DB_PATH", "./local_state.db")
+
+
+@dataclass(frozen=True)
+class AppAuthConfig:
+    username: str
+    password: str
+
+
+def load_app_auth_config() -> AppAuthConfig:
+    return AppAuthConfig(
+        username=os.environ["APP_USERNAME"],
+        password=os.environ["APP_PASSWORD"],
+    )

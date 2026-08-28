@@ -21,6 +21,13 @@ bill draft creation/attachment is not yet wired into the app.
    streamlit run app.py
    ```
 
+## App login
+
+The app is deployed publicly (Render), so it's gated behind a single static username/password
+checked against the `APP_USERNAME` / `APP_PASSWORD` env vars. Set both in the Render service's
+environment variables (and in your local `.env` for local runs) — the app has no login without
+them.
+
 ## Getting Zoho credentials (one-time, needs Zoho org admin access)
 
 1. Confirm your org's data center: Zoho Books → Settings → General → look at the URL/region.

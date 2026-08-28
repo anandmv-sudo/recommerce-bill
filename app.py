@@ -1,7 +1,7 @@
 import streamlit as st
 
 from src.bill_creator import create_bills_for_approved
-from src.config import load_eway_bill_config, load_zoho_config
+from src.config import load_app_auth_config, load_eway_bill_config, load_zoho_config
 from src.excel_parser import parse_eway_bill_mapping, parse_invoice_sheet, parse_item_catalog
 from src.eway_bill_client import EwayBillClient
 from src.item_catalog import ItemCatalog
@@ -10,6 +10,32 @@ from src.report import build_match_report, ready_invoice_numbers
 from src.zoho_client import ZohoClient
 
 st.set_page_config(page_title="Bulk Bill Automation", layout="wide")
+
+
+def _check_login() -> bool:
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("Bulk Bill Creation — Zoho + E-way Bill")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
+
+    if submitted:
+        auth = load_app_auth_config()
+        if username == auth.username and password == auth.password:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+
+    return False
+
+
+if not _check_login():
+    st.stop()
+
 st.title("Bulk Bill Creation — Zoho + E-way Bill")
 
 env_choice = st.radio("Zoho environment", ["Live", "Test"], horizontal=True)
