@@ -97,7 +97,7 @@ if excel_file and eway_mapping_file and item_catalog_file and zip_file:
 if "report_df" in st.session_state:
     report_df = st.session_state["report_df"]
     st.subheader("Match report")
-    st.dataframe(report_df, use_container_width=True)
+    st.dataframe(report_df, width="stretch")
 
     ready_invoices = ready_invoice_numbers(report_df)
     st.subheader("Select invoices to approve")
@@ -150,4 +150,4 @@ if "report_df" in st.session_state:
 
 if "outcome_df" in st.session_state:
     st.subheader("Post-run outcome report")
-    st.dataframe(st.session_state["outcome_df"], use_container_width=True)
+    st.dataframe(st.session_state["outcome_df"], width="stretch")
