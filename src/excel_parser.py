@@ -85,6 +85,16 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _excel_engine_kwargs(name: str) -> dict:
+    """read_only skips building openpyxl's full in-memory workbook model
+    (styles, data validations, defined names, ...) and streams rows from the
+    XML instead -- only relevant for .xlsx (openpyxl); the legacy .xls engine
+    (xlrd) doesn't accept it. GST-portal exports in particular carry heavy
+    per-cell formatting that made openpyxl's default mode balloon memory well
+    past a small hosting instance's limit on a several-thousand-row sheet."""
+    return {"read_only": True} if name.lower().endswith(".xlsx") else {}
+
+
 def _read_table(file) -> pd.DataFrame:
     """Reads an uploaded excel (.xlsx/.xls) or .csv file into a DataFrame,
     auto-detecting the real header row/sheet for a "Classic Export"-style
@@ -94,7 +104,7 @@ def _read_table(file) -> pd.DataFrame:
     if name.lower().endswith(".csv"):
         return pd.read_csv(file)
 
-    xl = pd.ExcelFile(file)
+    xl = pd.ExcelFile(file, engine_kwargs=_excel_engine_kwargs(name))
     sheet_name = next((s for s in xl.sheet_names if s.strip().lower() == "data"), xl.sheet_names[0])
 
     preview = xl.parse(sheet_name, header=None, nrows=10)
@@ -116,7 +126,7 @@ def _read_all_sheets(file) -> pd.DataFrame:
     if name.lower().endswith(".csv"):
         return pd.read_csv(file)
 
-    xl = pd.ExcelFile(file)
+    xl = pd.ExcelFile(file, engine_kwargs=_excel_engine_kwargs(name))
     frames = [xl.parse(sheet) for sheet in xl.sheet_names]
     frames = [f for f in frames if not f.empty]
     if not frames:
