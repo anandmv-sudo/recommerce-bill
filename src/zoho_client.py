@@ -180,6 +180,16 @@ class ZohoClient:
         for event in to_wait:
             event.wait()
 
+    # The only fields anything in this codebase reads off a vendor contact
+    # (see find_vendor_by_gstin, bill_creator.py). Zoho's /contacts response
+    # includes addresses, contact_persons, custom_fields, etc. per contact --
+    # for an org with a large vendor base, holding all of that for every
+    # contact for the lifetime of one match-report run is what was pushing
+    # this app's Render instance over its memory limit (exit 137 / OOM
+    # kill), so each contact is trimmed down to this shape immediately after
+    # fetching, before the next page is even requested.
+    _VENDOR_FIELDS = ("contact_id", "contact_name", "gst_no", "place_of_contact", "cf_vertical_name")
+
     def _list_all_vendor_contacts(self) -> list[dict]:
         contacts = []
         page = 1
@@ -191,7 +201,7 @@ class ZohoClient:
                 timeout=30,
             )
             body = self._check(response)
-            contacts.extend(body.get("contacts", []))
+            contacts.extend({field: c.get(field) for field in self._VENDOR_FIELDS} for c in body.get("contacts", []))
             if not body.get("page_context", {}).get("has_more_page"):
                 return contacts
             page += 1
